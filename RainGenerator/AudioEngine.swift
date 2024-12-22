@@ -1,30 +1,40 @@
 import AVFoundation
 import Foundation
 
-class AudioEngine: ObservableObject {
-    private struct Raindrop {
-        var currentSample: Int = 0
-        var tInit: Double = 0.001
-        var deltaT1: Double = 0.002
-        var deltaT2: Double = 0.006
-        var deltaT3: Double = 0.012
-        var a0: Double = 0.5
-        var a1: Double = 1.2
-        var frequency: Double = 1000.0
-        var decayRate: Double = 6.0
+@Observable
+class AudioEngine {
+    struct Raindrop {
+        fileprivate var currentSample: Int = 0
+        fileprivate var sampleRate: Float = 44100
+        var tInit: Float = 0.001
+        var deltaT1: Float = 0.0075
+        var deltaT2: Float = 0.015
+        var deltaT3: Float = 0.030
+        var a1: Float = 0.4
+        var a2: Float = 0.7
+        var frequency: Float = 400.0
         
-        mutating func generateSample(time: Double, sampleRate: Double) -> Double {
+        var time: Float {
+            Float(currentSample) / sampleRate
+        }
+        
+        mutating func generateSample() -> Float {
+            let time = self.time
+            currentSample += 1
             if time < tInit {
                 return 0.0
-            } else if time < (tInit + deltaT1) {
-                let t = .pi * (time - tInit) / deltaT1 - 0.5 * .pi
-                return a0 * cos(t)
-            } else if time < (tInit + deltaT2) {
+            } else if time < deltaT1 {
+                let t = .pi * (time - tInit) / (deltaT1 - tInit) - 0.5 * .pi
+                return a1 * cos(t)
+            } else if time < deltaT2 {
                 return 0.0
-            } else if time < (tInit + deltaT3) {
-                let bubbleTime = time - tInit - deltaT2
-                let decay = exp(-decayRate * bubbleTime / (deltaT3 - deltaT2))
-                return decay * a1 * sin(2.0 * .pi * frequency * bubbleTime)
+            } else if time < deltaT3 {
+                let bubbleTime = time - deltaT2
+                let decay = exp(-6 * bubbleTime / (deltaT3 - deltaT2))
+                let expand = exp(0.5 * bubbleTime / (deltaT3 - deltaT2))
+                return decay * a2 * sin(2.0 * .pi * frequency * bubbleTime * expand)
+            } else if time < deltaT3 + tInit {
+                return 0.0
             }
             return 0.0
         }
@@ -33,29 +43,29 @@ class AudioEngine: ObservableObject {
     private var engine: AVAudioEngine
     private var mainMixer: AVAudioMixerNode
     private var player: AVAudioSourceNode?
-    private var sampleRate: Double
+    private(set) var sampleRate: Float
     private var raindrops: [Raindrop] = []
-    private var lastDropTime: Double = 0
+    private var nextDropTime: Float = 0
     
-    @Published var volume: Double = 0.5
-    @Published var dropsPerMinute: Double = 1200 {  // One drop per second by default
-        didSet {
-            updateDropInterval()
-        }
-    }
-    @Published var sampleInterval: Double = 8
-    @Published var randomness: Double = 0.5
-    
-    private var dropInterval: Double = 1.0  // Time between drops in seconds
-    private var currentTime: Double = 0.0
-    
-    @Published private(set) var isRunning: Bool = false
+    var raindrop = Raindrop()
+    var volume: Float = 0.5
+    var dropsPerMinute: Float = 200
+    var dropRandomness: Float = 0.75
+    var frequencyRandomness: Float = 0.75
+    var pinkNoise: Float = 0.025
+    var brownNoise: Float = 0.10
+    var whiteNoise: Float = 0.05
+
+    private var currentTime: Float = 0.0
+    private(set) var isRunning: Bool = false
     
     init() {
-        engine = AVAudioEngine()
+        let engine = AVAudioEngine()
+        self.engine = engine
         mainMixer = engine.mainMixerNode
-        sampleRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
-        updateDropInterval()
+        let outputFormat = engine.outputNode.outputFormat(forBus: 0)
+        let playerFormat = AVAudioFormat(standardFormatWithSampleRate: outputFormat.sampleRate, channels: 1)!
+        sampleRate = Float(playerFormat.sampleRate)
         
         let player = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList in
             guard let self = self else { return noErr }
@@ -63,34 +73,41 @@ class AudioEngine: ObservableObject {
         }
         self.player = player
         
-        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
         engine.attach(player)
-        engine.connect(player, to: mainMixer, format: format)
-        engine.connect(mainMixer, to: engine.outputNode, format: format)
+        engine.connect(player, to: mainMixer, format: playerFormat)
+        engine.connect(mainMixer, to: engine.outputNode, format: playerFormat)
         mainMixer.outputVolume = 1.0
     }
     
-    private func updateDropInterval() {
-        dropInterval = 60.0 / dropsPerMinute
-    }
-    
-    private func createNewRaindrop() -> Raindrop {
-        var drop = Raindrop()
-        
-        // Randomize parameters based on drop size
-        let intervalCoeff = sampleInterval
-        let freqCoeff = randomness
+    func createNewRaindrop(fixedValue: Bool, sampleRate: Float) -> Raindrop {
+        var newDrop = raindrop
+        newDrop.sampleRate = sampleRate
         
         // Timing parameters
-        drop.deltaT1 = intervalCoeff * Double.random(in: 0...0.002)
-        drop.deltaT2 = 0.002 + intervalCoeff * Double.random(in: 0...0.004)
-        drop.deltaT3 = 0.006 + intervalCoeff * Double.random(in: 0...0.006)
+        newDrop.deltaT1 = newDrop.tInit + Float.randomnessAroundMidpoint(randomness: fixedValue ? 0 : dropRandomness, midpoint: newDrop.deltaT1)
+        newDrop.deltaT2 = newDrop.deltaT1 + Float.randomnessAroundMidpoint(randomness: fixedValue ? 0 : dropRandomness, midpoint: newDrop.deltaT2)
+        newDrop.deltaT3 = newDrop.deltaT2 + Float.randomnessAroundMidpoint(randomness: fixedValue ? 0 : dropRandomness, midpoint: newDrop.deltaT3)
         
         // Sound parameters
-        drop.decayRate = 3.0 + freqCoeff * Double.random(in: 0...12)
-        drop.frequency = 500.0 + freqCoeff * Double.random(in: 0...2000)
+        newDrop.frequency = Float.randomnessAroundMidpoint(randomness: fixedValue ? 0 : dropRandomness, midpoint: newDrop.frequency)
         
-        return drop
+        return newDrop
+    }
+    
+    func raindropSampleCount() -> Int {
+        let newDrop = createNewRaindrop(fixedValue: true, sampleRate: sampleRate)
+        return Int((newDrop.deltaT3 + newDrop.tInit) * sampleRate)
+    }
+    
+    func generateWaveform(samples: Int) -> [Float] {
+        var waveform: [Float] = []
+        var raindrop = createNewRaindrop(fixedValue: true, sampleRate: sampleRate)
+        
+        for _ in 0..<samples {
+            let sample = raindrop.generateSample()
+            waveform.append(sample)
+        }
+        return waveform
     }
     
     private func generateAudio(
@@ -100,32 +117,32 @@ class AudioEngine: ObservableObject {
         let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
         let frameLength = Int(frameCount)
         
+        let dropInterval = 60.0 / dropsPerMinute
         for frame in 0..<frameLength {
             // Check if it's time to add a new raindrop
-            if currentTime - lastDropTime >= dropInterval {
-                raindrops.append(createNewRaindrop())
-                lastDropTime = currentTime + dropInterval * Double.random(in: (-2 * randomness)...(4 * randomness))
+            if currentTime >= nextDropTime {
+                raindrops.append(createNewRaindrop(fixedValue: false, sampleRate: sampleRate))
+                nextDropTime = currentTime + Float.randomnessAroundMidpoint(randomness: 0.95 * frequencyRandomness, midpoint: dropInterval)
             }
             
             // Sum the samples from all active raindrops
-            var sample: Double = 0.0
+            var sample: Float = 0.0
             raindrops = raindrops.filter { drop in
-                let dropTime = Double(drop.currentSample) / sampleRate
-                return dropTime < (drop.tInit + drop.deltaT3)  // Keep drop if it hasn't finished playing
+                return drop.time < (drop.deltaT3 + drop.tInit)  // Keep drop if it hasn't finished playing
             }
             
             for i in 0..<raindrops.count {
-                let dropTime = Double(raindrops[i].currentSample) / sampleRate
-                sample += raindrops[i].generateSample(time: dropTime, sampleRate: sampleRate)
+                sample += raindrops[i].generateSample()
                 raindrops[i].currentSample += 1
             }
             
-            // Apply volume and write to buffer
-            let finalSample = sample * volume
+            // Add pink noise to the sample
+            sample += generateWhiteNoise() + generateBrownNoise() + generatePinkNoise()
             
+            // Write the sample to all channels
             for buffer in ablPointer {
                 let buf: UnsafeMutableBufferPointer<Float> = UnsafeMutableBufferPointer(buffer)
-                buf[frame] = Float(finalSample)
+                buf[frame] = sample * volume
             }
             
             currentTime += 1.0 / sampleRate
@@ -134,8 +151,35 @@ class AudioEngine: ObservableObject {
         return noErr
     }
     
+    private var pinkNoiseState: [Float] = Array(repeating: 0.0, count: 7)
+    private var brownNoiseState: Float = 0.0
+    
+    private func generatePinkNoise() -> Float {
+        let white = Float.random(in: -1.0...1.0)
+        pinkNoiseState[0] = 0.99886 * pinkNoiseState[0] + white * 0.0555179
+        pinkNoiseState[1] = 0.99332 * pinkNoiseState[1] + white * 0.0750759
+        pinkNoiseState[2] = 0.96900 * pinkNoiseState[2] + white * 0.1538520
+        pinkNoiseState[3] = 0.86650 * pinkNoiseState[3] + white * 0.3104856
+        pinkNoiseState[4] = 0.55000 * pinkNoiseState[4] + white * 0.5329522
+        pinkNoiseState[5] = -0.7616 * pinkNoiseState[5] - white * 0.0168980
+        let pink = pinkNoiseState[0] + pinkNoiseState[1] + pinkNoiseState[2] + pinkNoiseState[3] + pinkNoiseState[4] + pinkNoiseState[5] + pinkNoiseState[6] + white * 0.5362
+        pinkNoiseState[6] = white * 0.115926
+        return pink * pinkNoise
+    }
+    
+    private func generateWhiteNoise() -> Float {
+        return Float.random(in: -1.0...1.0) * whiteNoise
+    }
+    
+    private func generateBrownNoise() -> Float {
+        let white = Float.random(in: -1.0...1.0)
+        brownNoiseState = (brownNoiseState + white).clamped(to: -1.0...1.0)
+        return brownNoiseState * brownNoise
+    }
 
     func start() throws {
+        currentTime = 0
+        nextDropTime = 0
         try engine.start()
         isRunning = true
     }
@@ -143,5 +187,27 @@ class AudioEngine: ObservableObject {
     func stop() {
         engine.stop()
         isRunning = false
+    }
+}
+
+extension Float {
+    func clamped(to: ClosedRange<Float>) -> Float {
+        if self < to.lowerBound {
+            return to.lowerBound
+        } else if self > to.upperBound {
+            return to.upperBound
+        } else {
+            return self
+        }
+    }
+    
+    static func randomnessAroundMidpoint(randomness: Float, midpoint: Float) -> Float {
+        if randomness != 0 {
+            let scale = randomness > 1 ? randomness : 1
+            let scaledRandomness = randomness > 1 ? 1 : randomness
+            return Float.random(in: (scale * midpoint * (1 - scaledRandomness))...(scale * midpoint * (1 + scaledRandomness)))
+        } else {
+            return midpoint
+        }
     }
 }

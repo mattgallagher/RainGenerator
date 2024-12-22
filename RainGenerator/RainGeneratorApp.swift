@@ -13,5 +13,6 @@ struct RainGeneratorApp: App {
         WindowGroup {
             ContentView()
         }
+        .defaultSize(width: 800, height: 800)
     }
 }
