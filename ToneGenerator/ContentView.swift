@@ -67,7 +67,7 @@ class AudioEngine {
     func start(waveform: Waveform, frequency: Double, volume: Double) {
         let sampleRate = 44100
         let length = AVAudioFrameCount(sampleRate)
-        let format = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1)!
+        let format = engine.outputNode.inputFormat(forBus: 0)
         buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: length)
         buffer?.frameLength = length
 
