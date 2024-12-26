@@ -59,7 +59,7 @@ struct ContentView: View {
             Chart {
                 ForEach(Array(waveform.enumerated()), id: \.offset) { index, value in
                     LineMark(
-                        x: .value("Time", Float(index) / audioEngine.sampleRate),
+                        x: .value("Time", Float(index) / audioEngine.parameters.raindrop.sampleRate),
                         y: .value("Amplitude", value)
                     )
                     .foregroundStyle(by: .value("Segment", color(index: index)))
@@ -89,7 +89,7 @@ struct ContentView: View {
     }
     
     private func color(index: Int) -> String {
-        audioEngine.parameters.raindrop.color(index: index, sampleRate: audioEngine.sampleRate)
+        audioEngine.parameters.raindrop.color(index: index)
     }
     
     private func updateWaveform() {
@@ -98,7 +98,7 @@ struct ContentView: View {
 }
 
 private extension AudioEngine.Raindrop {
-    func color(index: Int, sampleRate: Float) -> String {
+    func color(index: Int) -> String {
         switch Float(index) / sampleRate {
         case 0..<tInit: return "Padding (Initial)"
         case (tInit)..<(tInit + deltaT1): return "Impact"

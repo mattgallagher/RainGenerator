@@ -1,11 +1,13 @@
 import AVFoundation
 import Foundation
+import Synchronization
 
+@MainActor
 @Observable
 class AudioEngine {
     struct Raindrop: Equatable {
         fileprivate var currentSample: Int = 0
-        fileprivate var sampleRate: Float = 44100
+        var sampleRate: Float = 44100
         var tInit: Float = 0.001
         var deltaT1: Float = 0.0075
         var deltaT2: Float = 0.015
@@ -50,10 +52,13 @@ class AudioEngine {
         var pinkNoise: Float = 0.025
         var brownNoise: Float = 0.05
         var whiteNoise: Float = 0.0
-
-        func createNewRaindrop(fixedValue: Bool, sampleRate: Float) -> Raindrop {
+        
+        func createNewRaindrop(fixedValue: Bool) -> Raindrop {
             var newDrop = raindrop
-            newDrop.sampleRate = sampleRate
+            
+            // Amplitude parameters
+            newDrop.a1 = Float.randomnessAroundMidpoint(randomness: fixedValue ? 0 : dropRandomness, midpoint: newDrop.a1)
+            newDrop.a2 = Float.randomnessAroundMidpoint(randomness: fixedValue ? 0 : dropRandomness, midpoint: newDrop.a2)
             
             // Timing parameters
             newDrop.deltaT1 = newDrop.tInit + Float.randomnessAroundMidpoint(randomness: fixedValue ? 0 : dropRandomness, midpoint: newDrop.deltaT1)
@@ -73,7 +78,8 @@ class AudioEngine {
         var nextDropTime: Float = 0
         var pinkNoiseState: [Float] = Array(repeating: 0.0, count: 7)
         var brownNoiseState: Float = 0.0
-
+        var parameters = Parameters()
+        
         mutating func generatePinkNoise() -> Float {
             let white = Float.random(in: -1.0...1.0)
             pinkNoiseState[0] = 0.99886 * pinkNoiseState[0] + white * 0.0555179
@@ -97,14 +103,20 @@ class AudioEngine {
             return brownNoiseState
         }
     }
-
+    
     private var engine: AVAudioEngine
     private var mainMixer: AVAudioMixerNode
     private var player: AVAudioSourceNode?
-    private(set) var sampleRate: Float
     
-    var parameters = Parameters()
-    private var generatorState = GeneratorState()
+    var parameters = Parameters() {
+        didSet {
+            generatorState.withLock { state in
+                state.parameters = parameters
+            }
+        }
+    }
+    
+    private let generatorState = Mutex(GeneratorState())
     
     private(set) var isRunning: Bool = false
     
@@ -114,9 +126,9 @@ class AudioEngine {
         mainMixer = engine.mainMixerNode
         let outputFormat = engine.outputNode.outputFormat(forBus: 0)
         let playerFormat = AVAudioFormat(standardFormatWithSampleRate: outputFormat.sampleRate, channels: 1)!
-        sampleRate = Float(playerFormat.sampleRate)
+        parameters.raindrop.sampleRate = Float(playerFormat.sampleRate)
         
-        let player = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList in
+        let player = AVAudioSourceNode { @Sendable [weak self] _, _, frameCount, audioBufferList in
             guard let self = self else { return noErr }
             return self.generateAudio(audioBufferList: audioBufferList, frameCount: frameCount)
         }
@@ -129,13 +141,13 @@ class AudioEngine {
     }
     
     func raindropSampleCount() -> Int {
-        let newDrop = parameters.createNewRaindrop(fixedValue: true, sampleRate: sampleRate)
-        return Int((newDrop.deltaT3 + newDrop.tInit) * sampleRate)
+        let newDrop = parameters.createNewRaindrop(fixedValue: true)
+        return Int((newDrop.deltaT3 + newDrop.tInit) * newDrop.sampleRate)
     }
     
     func generateWaveform(samples: Int) -> [Float] {
         var waveform: [Float] = []
-        var raindrop = parameters.createNewRaindrop(fixedValue: true, sampleRate: sampleRate)
+        var raindrop = parameters.createNewRaindrop(fixedValue: true)
         
         for _ in 0..<samples {
             let sample = raindrop.generateSample()
@@ -144,18 +156,23 @@ class AudioEngine {
         return waveform
     }
     
-    private func generateAudio(
+    private nonisolated func generateAudio(
         audioBufferList: UnsafeMutablePointer<AudioBufferList>,
         frameCount: AVAudioFrameCount
     ) -> OSStatus {
         let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
         let frameLength = Int(frameCount)
         
+        var generatorState = self.generatorState.withLock { state in
+            state
+        }
+        let parameters = generatorState.parameters
+        
         let dropInterval = 60.0 / parameters.dropsPerMinute
         for frame in 0..<frameLength {
             // Check if it's time to add a new raindrop
             if generatorState.currentTime >= generatorState.nextDropTime {
-                generatorState.raindrops.append(parameters.createNewRaindrop(fixedValue: false, sampleRate: sampleRate))
+                generatorState.raindrops.append(parameters.createNewRaindrop(fixedValue: false))
                 generatorState.nextDropTime = generatorState.currentTime + Float.randomnessAroundMidpoint(randomness: 0.95 * parameters.frequencyRandomness, midpoint: dropInterval)
             }
             
@@ -179,20 +196,23 @@ class AudioEngine {
                 buf[frame] = sample * parameters.volume
             }
             
-            generatorState.currentTime += 1.0 / sampleRate
+            generatorState.currentTime += 1.0 / parameters.raindrop.sampleRate
+        }
+        
+        self.generatorState.withLock { state in
+            state = generatorState
         }
         
         return noErr
     }
-
+    
     func start() throws {
-        generatorState = GeneratorState()
         try engine.start()
         isRunning = true
     }
     
     func stop() {
-        engine.stop()
+        engine.pause()
         isRunning = false
     }
 }
