@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  ToneGenerator
+//  RainGenerator
 //
 //  Created by Matthew Gallagher on 1/12/2024.
 //
@@ -12,15 +12,15 @@ struct ContentView: View {
     
     var body: some View {
         VStack(spacing: 20) {
-            Text("Raindrop Generator")
-                .font(.title)
-            
             VStack(alignment: .leading) {
                 Text("Sample interval: \(audioEngine.sampleInterval)")
-                Slider(value: $audioEngine.sampleInterval, in: 0...10)
+                Slider(value: $audioEngine.sampleInterval, in: 0.5...50)
                 
                 Text("Randomness: \(Int(audioEngine.randomness * 100))%")
                 Slider(value: $audioEngine.randomness, in: 0...1)
+                
+                Text("Drops per minute: \(Int(audioEngine.dropsPerMinute))")
+                Slider(value: $audioEngine.dropsPerMinute, in: 60...10000)
                 
                 Text("Volume: \(Int(audioEngine.volume * 100))%")
                 Slider(value: $audioEngine.volume, in: 0...1)
@@ -28,9 +28,13 @@ struct ContentView: View {
             .padding(.horizontal)
             
             Button {
-                try? audioEngine.start()
+                if audioEngine.isRunning {
+                    audioEngine.stop()
+                } else {
+                    try?audioEngine.start()
+                }
             } label: {
-                Text("Generate Drop")
+                Text(audioEngine.isRunning ? "Stop" : "Start")
             }
         }
         .padding()
